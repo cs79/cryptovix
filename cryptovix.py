@@ -107,7 +107,7 @@ def select_options(opts, k0, direction):
     '''
     Filters options based on criteria related to moneyness and sequence of nonzero bids per VIX whitepaper.
     '''
-    k0 = float(k0) # just to be safe
+    orig_opts = opts.copy()
     assert type(opts) == pd.DataFrame, 'opts must be a dataframe'
     assert direction in ('put', 'call'), 'direction must be one of: \'put\', \'call\''
     opts.sort_values('strike', ascending=(direction == 'call'), inplace=True)
@@ -129,7 +129,39 @@ def select_options(opts, k0, direction):
         if successive_zero_bids == 2:
             break
     # filter to only rows where the strike is in the selected set
-    return opts[opts['strike'].isin(selected_strikes)]
+    return orig_opts[orig_opts['strike'].isin(selected_strikes)].sort_values('strike')
+
+def get_combined_table(puts, calls, k0):
+    '''
+    Filters both puts and calls per VIX criteria and combines results into a single table.
+    Mid-quote prices are calculated for each strike; shared k0 strike mid-quote prices are averaged across puts / calls.
+    '''
+    to_return = pd.DataFrame()
+    sel_p = select_options(puts, k0, 'put')
+    sel_c = select_options(calls, k0, 'call')
+    # this is just recalculating the put_price / call_price columns, it seems
+    sel_p['mid_quote_price'] = (sel_p['wtd_avg_bid'] + sel_p['wtd_avg_ask']) / 2
+    sel_c['mid_quote_price'] = (sel_c['wtd_avg_bid'] + sel_c['wtd_avg_ask']) / 2
+    # for non-strike values, reformat values and combine into to_return
+    ri = 0 # row indexer for to_return
+    si = 0 # selected indexer
+    for sel in (sel_p, sel_c):
+        for i in range(len(sel)):
+            strike = sel.iloc[i,:]['strike']
+            if strike == k0:
+                continue
+            to_return.loc[ri, 'strike'] = strike
+            to_return.loc[ri, 'option_type'] = 'put' if si == 0 else 'call'
+            to_return.loc[ri, 'mid_quote_price'] = sel.iloc[i,:]['mid_quote_price']
+            ri += 1
+        si += 1
+    # average the mid-quote prices for puts and calls and insert into to_return
+    to_return.loc[ri, 'strike'] = k0
+    to_return.loc[ri, 'option_type'] = 'put_call_avg'
+    to_return.loc[ri, 'mid_quote_price'] = (sel_p[sel_p['strike'] == k0]['mid_quote_price'].values[0] + sel_c[sel_c['strike'] == k0]['mid_quote_price'].values[0]) / 2
+    # sort and return
+    return to_return.sort_values('strike')
+
 
 #------------------------#
 # MAIN PROGRAM EXECUTION #
@@ -215,18 +247,6 @@ nextputs['put_price'] = (nextputs['wtd_avg_bid'] + nextputs['wtd_avg_ask']) / 2
 nearcalls['call_price'] = (nearcalls['wtd_avg_bid'] + nearcalls['wtd_avg_ask']) / 2
 nextcalls['call_price'] = (nextcalls['wtd_avg_bid'] + nextcalls['wtd_avg_ask']) / 2
 
-# near_pricecomp = pd.DataFrame()
-# shared_strikes = list(set(nearcalls['strike']) & set(nearputs['strike']))
-# shared_strikes.sort()
-# # build near-term table and find appropriate row
-# for i in range(len(shared_strikes)):
-#     strike = shared_strikes[i]
-#     near_pricecomp.loc[i, 'strike'] = strike
-#     near_pricecomp.loc[i, 'call_price'] = nearcalls[nearcalls['strike'] == strike]['call_price'].values[0]
-#     near_pricecomp.loc[i, 'put_price'] = nearputs[nearputs['strike'] == strike]['put_price'].values[0]
-# near_pricecomp['absdiff'] = abs(near_pricecomp['call_price'] - near_pricecomp['put_price'])
-# near_vixstrike = near_pricecomp.where(near_pricecomp['absdiff'] == min(near_pricecomp['absdiff'])).dropna()
-
 # not entirely clear what the failure mode is here if there is no liquidity to support finding the appropriate strikes...
 # though I guess in that case you're just not really going to get much value out of a VIX-esque value, period
 near_vixstrike = get_vixstrike(nearputs, nearcalls)
@@ -242,19 +262,10 @@ K0_1 = get_k0(near_strikes, F_1)
 K0_2 = get_k0(near_strikes, F_2)
 
 # select out-of-the-money puts and calls at each term per pg. 6-7 of VIX whitepaper
-near_selected = pd.DataFrame()
-next_selected = pd.DataFrame()
+near_selected = get_combined_table(nearputs, nearcalls, K0_1)
+next_selected = get_combined_table(nextputs, nextcalls, K0_2)
 
-# could create a wrapper for this function that runs it 2x, once for puts once for calls against same data set, then combines results nicely
-# assign result of *that* function to near_selected, next_selected
-
-
-
-
-
-
-
-
+# next step is "Step 2" of the VIX whitepaper to calculate volatility
 
 
 
