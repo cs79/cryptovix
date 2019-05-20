@@ -13,11 +13,7 @@ from datetime import datetime
 #-----------#
 DERIBIT_API_URL = 'https://www.deribit.com/api/v1/public/'
 DERIBIT_V2_API_URL = 'https://www.deribit.com/api/v2/public/'
-LEDGERX_API_URL = ''
 MINS_IN_YEAR = 365 * 24 * 60
-
-# This will give bids / asks for the selected instrument
-# order_book = json.loads(s.get(DERIBIT_API_URL + 'getorderbook', params={'instrument': instrument_names[0]}).content)
 
 #--------------------------#
 # CVIX FUNCTION PARAMETERS #
@@ -162,6 +158,40 @@ def get_combined_table(puts, calls, k0):
     # sort and return
     return to_return.sort_values('strike')
 
+def get_contribution_by_strike(selected, r, t):
+    '''
+    Computes [(deltaK / K^2) * e^RT * Q] term for each row of selected strip of options.
+    '''
+    if len(selected) < 3:
+        raise ValueError('this function is not designed to handle strips of fewer than 3 strikes')
+    to_return = selected.copy()
+    to_return.index = range(len(to_return))
+    for i in to_return.index:
+        delta_k = None
+        strike = to_return.loc[i, 'strike']
+        if i == 0:
+            delta_k = to_return.loc[i+1, 'strike'] - strike
+        elif i == len(selected)-1:
+            delta_k= strike - to_return.loc[i-1, 'strike']
+        else:
+            delta_k = (to_return.loc[i-1, 'strike'] + to_return.loc[i+1, 'strike']) / 2
+        assert delta_k is not None, 'something terrible happened'
+        # given delta_k, calculate contribution by strike:
+        to_return.loc[i, 'contrib_by_strike'] = (delta_k / (strike**2)) * np.exp(r*t) * to_return.loc[i, 'mid_quote_price']
+    return to_return
+
+def calc_first_term(selected, r, t):
+    '''
+    Computes the first (summation) term of the generalized VIX formula for sigma**2.
+    '''
+    cbs = get_contribution_by_strike(selected, r, t)
+    return cbs['contrib_by_strike'].sum() * (2 / t)
+
+def calc_second_term(t, f, k):
+    '''
+    Calculates the second term of the generalized VIX formula for sigma**2.
+    '''
+    return ((1 / t) * (((f / k) - 1) ** 2))
 
 #------------------------#
 # MAIN PROGRAM EXECUTION #
@@ -265,8 +295,12 @@ K0_2 = get_k0(near_strikes, F_2)
 near_selected = get_combined_table(nearputs, nearcalls, K0_1)
 next_selected = get_combined_table(nextputs, nextcalls, K0_2)
 
-# next step is "Step 2" of the VIX whitepaper to calculate volatility
+# "Step 2" of VIX calculation - sigma**2
+near_sigma_sqrd = calc_first_term(near_selected, R_1, T_1) - calc_second_term(T_1, F_1, K0_1)
+next_sigma_sqrd = calc_first_term(next_selected, R_2, T_2) - calc_second_term(T_2, F_2, K0_2)
 
+CVIX = np.sqrt((near_sigma_sqrd + next_sigma_sqrd) / 2) * 100
+print(CVIX)
 
-
-
+# "Step 3" would involve grabbing the order book periodically, calculating this number, and taking a 30-day weighted average
+# not sure if we can get historical order book data from Derebit for this
