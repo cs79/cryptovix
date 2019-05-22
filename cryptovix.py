@@ -1,4 +1,8 @@
-# Crypto VIX
+# Crypto VIX calculation for BTC using Deribit options
+
+#---------#
+# IMPORTS #
+#---------#
 
 import requests
 import json
@@ -7,21 +11,31 @@ import numpy as np
 import re
 from time import strptime
 from datetime import datetime
+from treasurydata import get_treasuries_coefs
 
 #-----------#
 # CONSTANTS #
 #-----------#
+
 DERIBIT_API_URL = 'https://www.deribit.com/api/v1/public/'
 DERIBIT_V2_API_URL = 'https://www.deribit.com/api/v2/public/'
 MINS_IN_YEAR = 365 * 24 * 60
+
+#----------------#
+# RUN PARAMETERS #
+#----------------#
+
+TREASURY_CURVE_FIT_DEGREE = 3
 
 #--------------------------#
 # CVIX FUNCTION PARAMETERS #
 #--------------------------#
 
 # for R_1 / R_2, instead of stripping an entire curve, could at least try to find 2 near-term points to query via request and then linear interpolate
-R_1 = 0.000305 # stolen from VIX whitepaper, do not use for real
-R_2 = 0.000286 # stolen from VIX whitepaper, do not use for real
+R_1_VIX = 0.000305 # stolen from VIX whitepaper, do not use for real
+R_2_VIX = 0.000286 # stolen from VIX whitepaper, do not use for real
+R_1 = None
+R_2 = None
 T_1 = None
 T_2 = None
 F_1 = None
@@ -196,6 +210,7 @@ def calc_second_term(t, f, k):
 #------------------------#
 # MAIN PROGRAM EXECUTION #
 #------------------------#
+
 s = requests.Session()
 
 # current BTC price to use for determining moneyness of options
@@ -265,8 +280,16 @@ tnow = pd.Timestamp.now(tz='UTC') # for consistency in next calculations
 T_1 = ((nearexp.tz_convert('UTC') - tnow).total_seconds() / 60) / MINS_IN_YEAR
 T_2 = ((nextexp.tz_convert('UTC') - tnow).total_seconds() / 60) / MINS_IN_YEAR
 
-# given T_1, T_2 and assuming we got R_1, R_2 from somewhere, calculate F_1, F_2
+# given T_1, T_2, use Treasuries curve to approximate R_1, R_2
+coefs = get_treasuries_coefs(TREASURY_CURVE_FIT_DEGREE)
+get_rate = lambda x: sum([coefs[i]*x**(len(coefs)-1-i) for i in range(len(coefs))]) / 100
+# not 100% sure on this calculation... n-day rate for n days is what I am aiming for here
+# R_1 = get_rate(T_1) * T_1
+# R_2 = get_rate(T_2) * T_2
+R_1 = R_1_VIX
+R_2 = R_2_VIX
 
+# given T_1, T_2 and R_1, R_2, calculate F_1, F_2
 # replicating tables from pg. 6 of VIX whitepaper
 nearputs = metadata[(metadata['optionType'] == 'put') & (metadata['term'] == 'near')].sort_values('strike')
 nextputs = metadata[(metadata['optionType'] == 'put') & (metadata['term'] == 'next')].sort_values('strike')
@@ -281,7 +304,6 @@ nextcalls['call_price'] = (nextcalls['wtd_avg_bid'] + nextcalls['wtd_avg_ask']) 
 # though I guess in that case you're just not really going to get much value out of a VIX-esque value, period
 near_vixstrike = get_vixstrike(nearputs, nearcalls)
 next_vixstrike = get_vixstrike(nextputs, nextcalls)
-# build next-term table and find appropriate row (obviously if similar enough, factor this out as a function)
 # near_vixstrike can be used to calculate F_1
 F_1 = near_vixstrike['strike'] + np.exp(R_1 * T_1) * (near_vixstrike['call_price'] - near_vixstrike['put_price'])
 F_2 = next_vixstrike['strike'] + np.exp(R_2 * T_2) * (next_vixstrike['call_price'] - next_vixstrike['put_price'])
@@ -303,4 +325,4 @@ CVIX = np.sqrt((near_sigma_sqrd + next_sigma_sqrd) / 2) * 100
 print(CVIX)
 
 # "Step 3" would involve grabbing the order book periodically, calculating this number, and taking a 30-day weighted average
-# not sure if we can get historical order book data from Derebit for this
+# not sure if we can get historical order book data from Deribit for this
