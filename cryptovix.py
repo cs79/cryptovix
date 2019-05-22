@@ -20,6 +20,8 @@ from treasurydata import get_treasuries_coefs
 DERIBIT_API_URL = 'https://www.deribit.com/api/v1/public/'
 DERIBIT_V2_API_URL = 'https://www.deribit.com/api/v2/public/'
 MINS_IN_YEAR = 365 * 24 * 60
+MINS_IN_30_DAYS = 30 * 24 * 60
+LOGFILE = './CVIX.log'
 
 #----------------#
 # RUN PARAMETERS #
@@ -42,6 +44,10 @@ F_1 = None
 F_2 = None
 K0_1 = None
 K0_2 = None
+SIGMA_SQRD_1 = None
+SIGMA_SQRD_2 = None
+NT_1 = None
+NT_2 = None
 
 #-----------#
 # FUNCTIONS #
@@ -207,6 +213,12 @@ def calc_second_term(t, f, k):
     '''
     return ((1 / t) * (((f / k) - 1) ** 2))
 
+def calc_cvix(t1, t2, ss1, ss2, nt1, nt2):
+    '''
+    Calculates CVIX index level.
+    '''
+    return 100 * np.sqrt((t1 * ss1 * ((nt2 - MINS_IN_30_DAYS) / (nt2 - nt1))) + (t2 * ss2 * ((MINS_IN_30_DAYS - nt1) / (nt2 - nt1)))) * (MINS_IN_YEAR / MINS_IN_30_DAYS)
+
 #------------------------#
 # MAIN PROGRAM EXECUTION #
 #------------------------#
@@ -284,10 +296,10 @@ T_2 = ((nextexp.tz_convert('UTC') - tnow).total_seconds() / 60) / MINS_IN_YEAR
 coefs = get_treasuries_coefs(TREASURY_CURVE_FIT_DEGREE)
 get_rate = lambda x: sum([coefs[i]*x**(len(coefs)-1-i) for i in range(len(coefs))]) / 100
 # not 100% sure on this calculation... n-day rate for n days is what I am aiming for here
-# R_1 = get_rate(T_1) * T_1
-# R_2 = get_rate(T_2) * T_2
-R_1 = R_1_VIX
-R_2 = R_2_VIX
+R_1 = get_rate(T_1) * T_1
+R_2 = get_rate(T_2) * T_2
+# R_1 = R_1_VIX
+# R_2 = R_2_VIX
 
 # given T_1, T_2 and R_1, R_2, calculate F_1, F_2
 # replicating tables from pg. 6 of VIX whitepaper
@@ -318,11 +330,18 @@ near_selected = get_combined_table(nearputs, nearcalls, K0_1)
 next_selected = get_combined_table(nextputs, nextcalls, K0_2)
 
 # "Step 2" of VIX calculation - sigma**2
-near_sigma_sqrd = calc_first_term(near_selected, R_1, T_1) - calc_second_term(T_1, F_1, K0_1)
-next_sigma_sqrd = calc_first_term(next_selected, R_2, T_2) - calc_second_term(T_2, F_2, K0_2)
+SIGMA_SQRD_1 = calc_first_term(near_selected, R_1, T_1) - calc_second_term(T_1, F_1, K0_1)
+SIGMA_SQRD_2 = calc_first_term(next_selected, R_2, T_2) - calc_second_term(T_2, F_2, K0_2)
 
-CVIX = np.sqrt((near_sigma_sqrd + next_sigma_sqrd) / 2) * 100
-print(CVIX)
+# CVIX = np.sqrt((near_sigma_sqrd + next_sigma_sqrd) / 2) * 100
+# print(CVIX)
 
-# "Step 3" would involve grabbing the order book periodically, calculating this number, and taking a 30-day weighted average
-# not sure if we can get historical order book data from Deribit for this
+# "Step 3" of VIX calculation - time-weighted average
+NT_1 = T_1 * MINS_IN_YEAR
+NT_2 = T_2 * MINS_IN_YEAR
+
+CVIX = calc_cvix(T_1, T_2, SIGMA_SQRD_1, SIGMA_SQRD_2, NT_1, NT_2)
+
+with open(LOGFILE, 'w') as f:
+    f.write('{} {}'.format(datetime.now().isoformat(), CVIX))
+    f.close()
